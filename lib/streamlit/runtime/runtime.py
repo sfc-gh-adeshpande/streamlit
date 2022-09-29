@@ -28,6 +28,7 @@ from streamlit.logger import get_logger
 from streamlit.proto.BackMsg_pb2 import BackMsg
 from streamlit.proto.ForwardMsg_pb2 import ForwardMsg
 from streamlit.runtime.runtime_util import is_cacheable_msg
+from streamlit.server.server_util import serialize_forward_msg
 from streamlit.watcher import LocalSourcesWatcher
 from .app_session import AppSession
 from .caching import get_memo_stats_provider, get_singleton_stats_provider
@@ -43,6 +44,7 @@ from .session_data import SessionData
 from .state import SessionStateStatProvider, SCRIPT_RUN_WITHOUT_ERRORS_KEY
 from .stats import StatsManager
 from .uploaded_file_manager import UploadedFileManager
+
 
 # Wait for the script run result for 60s and if no result is available give up
 SCRIPT_RUN_CHECK_TIMEOUT: Final = 60
@@ -61,8 +63,10 @@ class RuntimeStoppedError(Exception):
 class SessionClient(Protocol):
     """Interface for sending data to a session's client."""
 
-    def write_forward_msg(self, msg: ForwardMsg) -> None:
-        """Deliver a ForwardMsg to the client.
+    def write_forward_msg(self, msg_bytes: bytes, script_finished: int) -> None:
+        """Deliver a serialized ForwardMsg to the client.
+
+        It also communicates to the client whether the script has finished executing.
 
         If the SessionClient has been disconnected, it should raise a
         SessionClientDisconnectedError.
@@ -635,6 +639,7 @@ Please report this bug at https://github.com/streamlit/streamlit/issues.
 
         # If this was a `script_finished` message, we increment the
         # script_run_count for this session, and update the cache
+        script_finished = false
         if (
             msg.WhichOneof("type") == "script_finished"
             and msg.script_finished == ForwardMsg.FINISHED_SUCCESSFULLY
@@ -649,9 +654,12 @@ Please report this bug at https://github.com/streamlit/streamlit/issues.
             self._message_cache.remove_expired_session_entries(
                 session_info.session, session_info.script_run_count
             )
+            script_finished = true
 
         # Ship it off!
-        session_info.client.write_forward_msg(msg_to_send)
+        session_info.client.write_forward_msg(
+            serialize_forward_msg(msg_to_send), int(script_finished)
+        )
 
     def _enqueued_some_message(self) -> None:
         """Callback called by AppSession after the AppSession has enqueued a
